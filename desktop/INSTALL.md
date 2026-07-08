@@ -13,6 +13,16 @@ local database, your own 8vance credentials, no server to manage.
 
 New versions **auto-update** on launch (see below).
 
+## Install on macOS
+1. Download the latest **`FindTalent-x.y.z.dmg`** (or `-mac.zip`) from
+   [Releases](https://github.com/alexspaan8vance/findtalent-desktop/releases).
+   Pick the build for your chip — **Apple Silicon** (M1/M2/M3/M4) or **Intel**.
+2. Open the `.dmg` → drag **FindTalent** to Applications.
+3. First open: macOS blocks unsigned apps → **right-click the app → Open →
+   Open** (only needed the first time).
+4. Same first-run: a one-time admin login appears; then Admin → add your 8vance
+   pool. Data lives in `~/Library/Application Support/FindTalent/`.
+
 ## Install (alternative — portable, no installer)
 Prefer not to run an installer? Download **`FindTalent-x.y.z-win.zip`** from
 Releases, unzip anywhere (e.g. your Desktop), and run **`FindTalent.exe`** inside.

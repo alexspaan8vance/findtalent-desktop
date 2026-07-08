@@ -21,7 +21,7 @@
     "e2e:report": "playwright show-report e2e-report",
     "desktop:dev": "electron desktop/main.js",
     "desktop:template-db": "node scripts/build-template-db.js",
-    "desktop:build": "next build && node scripts/build-template-db.js && electron-builder --win nsis --config desktop/electron-builder.yml"
+    "desktop:build": "next build && node scripts/build-template-db.js && electron-builder --config desktop/electron-builder.yml"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.104.2",

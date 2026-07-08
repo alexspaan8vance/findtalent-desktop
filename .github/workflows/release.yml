@@ -1,10 +1,11 @@
 name: release-desktop
 
-# Builds the Windows installer and publishes it to a GitHub Release so the
-# desktop app's auto-updater (electron-updater) can deliver it to Bob.
+# Builds the desktop installers and publishes them to a GitHub Release so the
+# app's auto-updater (electron-updater) can deliver them.
 #
 # Trigger: push a tag like `v0.1.0`  →  git tag v0.1.0 && git push origin v0.1.0
-# The release .exe + latest.yml land on the Releases page automatically.
+# Windows (.exe) is built on windows-latest; macOS (.dmg + .zip) on macOS runners.
+# Bob is on a Mac, so the macOS jobs matter most.
 
 on:
   push:
@@ -17,7 +18,19 @@ permissions:
 
 jobs:
   build:
-    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            flag: --win
+          # Apple Silicon (M1/M2/M3/M4). macos-14+ runners are arm64.
+          - os: macos-14
+            flag: --mac
+          # Intel Macs. macos-13 runners are x64.
+          - os: macos-13
+            flag: --mac
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
@@ -29,11 +42,11 @@ jobs:
       - name: Install deps
         run: npm ci
 
-      - name: Build desktop installer + publish
-        # electron-builder reads publish:{provider:github} from the config and
-        # uploads to the Release matching this tag. next build + template DB run
-        # first (see desktop:build); --publish always forces the upload.
-        run: npm run desktop:build -- --publish always
+      - name: Build + publish desktop artifact
+        # next build + template DB run first (see desktop:build). electron-builder
+        # builds the platform target from desktop/electron-builder.yml and uploads
+        # to the Release matching this tag.
+        run: npm run desktop:build -- ${{ matrix.flag }} --publish always
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CSC_IDENTITY_AUTO_DISCOVERY: 'false' # unsigned build (SmartScreen note in INSTALL.md)
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false' # unsigned (Gatekeeper/SmartScreen note in INSTALL.md)

@@ -50,6 +50,22 @@ nsis:
   createDesktopShortcut: true
   createStartMenuShortcut: true
 
+# macOS build (Bob is on a Mac). Built by CI on a macOS runner — a mac .dmg
+# cannot be produced on Windows. Universal covers both Apple Silicon + Intel.
+# Unsigned (no Apple Developer cert): Bob right-clicks the app → Open to bypass
+# Gatekeeper the first time (noted in INSTALL.md).
+mac:
+  # Native arch of the CI runner (the Next standalone traces only the build
+  # machine's prisma query engine, so a single-arch build is the reliable path;
+  # the CI matrix picks the runner to match Bob's chip — arm64 vs intel x64).
+  target:
+    - dmg
+    - zip
+  category: public.app-category.business
+  # icon: desktop/build/icon.icns
+dmg:
+  writeUpdateInfo: false
+
 # Auto-update from GitHub Releases (electron-updater reads this at runtime).
 publish:
   provider: github

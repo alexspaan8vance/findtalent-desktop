@@ -44,16 +44,23 @@ exports.default = async function afterPack(context) {
     copy(path.join(projectRoot, from), path.join(appRoot, to));
   }
 
-  // Sanity: the two things that MUST be present for the app to run.
+  // Sanity: the things that MUST be present for the app to run.
   const mustExist = [
     path.join(appRoot, '.next/standalone/server.js'),
     path.join(appRoot, '.next/standalone/node_modules/@prisma/client'),
-    path.join(appRoot, '.next/standalone/node_modules/.prisma/client/query_engine-windows.dll.node'),
     path.join(appRoot, 'desktop/template.db'),
   ];
   const missing = mustExist.filter((p) => !fs.existsSync(p));
   if (missing.length) {
     throw new Error(`[after-pack] payload incomplete:\n  ${missing.join('\n  ')}`);
+  }
+  // The prisma query engine is platform-specific (query_engine-windows.dll.node,
+  // libquery_engine-darwin*.dylib.node, …) — assert one exists, any platform.
+  const engineDir = path.join(appRoot, '.next/standalone/node_modules/.prisma/client');
+  const hasEngine = fs.existsSync(engineDir) &&
+    fs.readdirSync(engineDir).some((f) => /query_engine/i.test(f));
+  if (!hasEngine) {
+    throw new Error(`[after-pack] no prisma query engine in ${engineDir}`);
   }
   console.log('[after-pack] app payload assembled OK');
 };

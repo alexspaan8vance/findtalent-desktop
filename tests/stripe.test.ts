@@ -262,6 +262,30 @@ function paymentFailedEvent(opts: {
   } as unknown as Stripe.Event;
 }
 
+function subscriptionDeletedEvent(opts: {
+  id: string;
+  subscriptionId: string;
+  customerId: string;
+}): Stripe.Event {
+  return {
+    id: opts.id,
+    object: 'event',
+    api_version: '2026-05-27.dahlia',
+    created: 1_700_000_000,
+    livemode: false,
+    pending_webhooks: 0,
+    request: null,
+    type: 'customer.subscription.deleted',
+    data: {
+      object: {
+        id: opts.subscriptionId,
+        object: 'subscription',
+        customer: opts.customerId,
+      } as unknown as Stripe.Subscription,
+    },
+  } as unknown as Stripe.Event;
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -500,5 +524,176 @@ describe('stripe webhook route', () => {
     const second = await POST(makeRequest(JSON.stringify(event), 'sig_ok'));
     const secondBody = (await second.json()) as { idempotent?: boolean };
     expect(secondBody.idempotent).toBe(true);
+  });
+
+  it('marks the WebhookEvent completed after a successful handle', async () => {
+    const user = await createUser({ email: 'done@test.local' });
+    const event = checkoutSessionEvent({
+      id: 'evt_status_completed',
+      sessionId: 'cs_status_1',
+      userId: user.id,
+      credits: 1,
+    });
+    setConstructEventImpl(() => event);
+
+    await POST(makeRequest(JSON.stringify(event), 'sig_ok'));
+
+    const row = await prisma.webhookEvent.findUnique({
+      where: { eventId: 'evt_status_completed' },
+    });
+    expect(row?.status).toBe('completed');
+  });
+
+  it('P1: re-runs a still-processing claim (crash BEFORE grant) and grants once', async () => {
+    // Simulate a prior delivery that claimed the event but crashed before the
+    // grant + before marking completed: a 'processing' row, no credits yet.
+    const user = await createUser({ email: 'crash1@test.local', purchasedCredits: 0 });
+    await prisma.webhookEvent.create({
+      data: {
+        eventId: 'evt_rerun_nogrant',
+        type: 'checkout.session.completed',
+        status: 'processing',
+      },
+    });
+    const event = checkoutSessionEvent({
+      id: 'evt_rerun_nogrant',
+      sessionId: 'cs_rerun_1',
+      userId: user.id,
+      credits: 4,
+    });
+    setConstructEventImpl(() => event);
+
+    const res = await POST(makeRequest(JSON.stringify(event), 'sig_ok'));
+    expect(res.status).toBe(200);
+
+    // The re-run performed the grant that the crashed attempt never did.
+    const after = await prisma.user.findUniqueOrThrow({ where: { id: user.id } });
+    expect(after.purchasedCredits).toBe(4);
+    const ledger = await prisma.creditTransaction.findMany({ where: { userId: user.id } });
+    expect(ledger).toHaveLength(1);
+    // And the claim is now completed so further retries short-circuit.
+    const row = await prisma.webhookEvent.findUnique({
+      where: { eventId: 'evt_rerun_nogrant' },
+    });
+    expect(row?.status).toBe('completed');
+  });
+
+  it('P1: re-runs a still-processing claim (crash AFTER grant) without double-granting', async () => {
+    // Simulate a prior delivery that granted the credits (idempotencyKey row
+    // written, balance incremented) but crashed before marking completed.
+    const user = await createUser({ email: 'crash2@test.local', purchasedCredits: 4 });
+    await prisma.webhookEvent.create({
+      data: {
+        eventId: 'evt_rerun_granted',
+        type: 'checkout.session.completed',
+        status: 'processing',
+      },
+    });
+    await prisma.creditTransaction.create({
+      data: {
+        userId: user.id,
+        delta: 4,
+        reason: 'PURCHASE',
+        refId: 'cs_rerun_2',
+        idempotencyKey: 'purchase:cs_rerun_2',
+      },
+    });
+    const event = checkoutSessionEvent({
+      id: 'evt_rerun_granted',
+      sessionId: 'cs_rerun_2',
+      userId: user.id,
+      credits: 4,
+    });
+    setConstructEventImpl(() => event);
+
+    const res = await POST(makeRequest(JSON.stringify(event), 'sig_ok'));
+    expect(res.status).toBe(200);
+
+    // The idempotencyKey collision makes the re-run's grant a no-op — no double.
+    const after = await prisma.user.findUniqueOrThrow({ where: { id: user.id } });
+    expect(after.purchasedCredits).toBe(4);
+    const ledger = await prisma.creditTransaction.findMany({ where: { userId: user.id } });
+    expect(ledger).toHaveLength(1);
+    const row = await prisma.webhookEvent.findUnique({
+      where: { eventId: 'evt_rerun_granted' },
+    });
+    expect(row?.status).toBe('completed');
+  });
+
+  it('P2: invoice.paid throws 500 when the price has no seeded Plan (misconfig)', async () => {
+    const customerId = 'cus_no_plan';
+    await createUser({ email: 'noplan@test.local', stripeCustomerId: customerId });
+    // No Plan row created for this price id.
+    const event = invoicePaidEvent({
+      id: 'evt_invoice_no_plan',
+      invoiceId: 'in_no_plan',
+      customerId,
+      priceId: 'price_unseeded',
+      periodEnd: 1_800_000_000,
+      billingReason: 'subscription_create',
+    });
+    setConstructEventImpl(() => event);
+
+    const res = await POST(makeRequest(JSON.stringify(event), 'sig_ok'));
+    // 500 → Stripe retries instead of silently dropping the paid grant.
+    expect(res.status).toBe(500);
+    // Claim left at 'processing' so the retry re-runs the handler.
+    const row = await prisma.webhookEvent.findUnique({
+      where: { eventId: 'evt_invoice_no_plan' },
+    });
+    expect(row?.status).toBe('processing');
+  });
+
+  it('P2: invoice.paid throws 500 when no user maps to the customer (misconfig)', async () => {
+    const customerId = 'cus_orphan';
+    // Plan exists for the price, but NO user carries this customer id.
+    const plan = await createPlan('price_orphan_basic', 2);
+    const event = invoicePaidEvent({
+      id: 'evt_invoice_orphan',
+      invoiceId: 'in_orphan',
+      customerId,
+      priceId: plan.stripePriceId,
+      periodEnd: 1_800_000_000,
+      billingReason: 'subscription_create',
+    });
+    setConstructEventImpl(() => event);
+
+    const res = await POST(makeRequest(JSON.stringify(event), 'sig_ok'));
+    expect(res.status).toBe(500);
+    const row = await prisma.webhookEvent.findUnique({
+      where: { eventId: 'evt_invoice_orphan' },
+    });
+    expect(row?.status).toBe('processing');
+  });
+
+  it('P2: subscription.deleted zeroes the balance and records the exact wipe in the ledger', async () => {
+    const customerId = 'cus_cancel';
+    const user = await createUser({
+      email: 'cancel@test.local',
+      stripeCustomerId: customerId,
+      creditsBalance: 3,
+      purchasedCredits: 5,
+    });
+    const event = subscriptionDeletedEvent({
+      id: 'evt_sub_deleted',
+      subscriptionId: 'sub_cancel_1',
+      customerId,
+    });
+    setConstructEventImpl(() => event);
+
+    const res = await POST(makeRequest(JSON.stringify(event), 'sig_ok'));
+    expect(res.status).toBe(200);
+
+    const after = await prisma.user.findUniqueOrThrow({ where: { id: user.id } });
+    // Subscription credits wiped; purchased pack credits untouched.
+    expect(after.creditsBalance).toBe(0);
+    expect(after.purchasedCredits).toBe(5);
+    expect(after.currentPlanId).toBeNull();
+    expect(after.subscriptionStatus).toBe('canceled');
+
+    const ledger = await prisma.creditTransaction.findMany({ where: { userId: user.id } });
+    expect(ledger).toHaveLength(1);
+    expect(ledger[0].delta).toBe(-3);
+    expect(ledger[0].refId).toBe('subscription-canceled:sub_cancel_1');
   });
 });

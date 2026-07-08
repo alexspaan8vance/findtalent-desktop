@@ -79,6 +79,45 @@ describe("credits ledger", () => {
     expect(availableCredits(after)).toBe(5);
   });
 
+  it("grantCredits with an idempotencyKey is at-most-once (second call is a no-op)", async () => {
+    const user = await createUser(0, 0);
+    const first = await grantCredits(
+      user.id,
+      3,
+      "cs_dup",
+      "PURCHASE",
+      "purchased",
+      "purchase:cs_dup"
+    );
+    expect(first).toBe(true);
+
+    // Same key again → skipped: balance unchanged, no second ledger row.
+    const second = await grantCredits(
+      user.id,
+      3,
+      "cs_dup",
+      "PURCHASE",
+      "purchased",
+      "purchase:cs_dup"
+    );
+    expect(second).toBe(false);
+
+    const after = await prisma.user.findUniqueOrThrow({ where: { id: user.id } });
+    expect(after.purchasedCredits).toBe(3);
+    const tx = await prisma.creditTransaction.findMany({ where: { userId: user.id } });
+    expect(tx).toHaveLength(1);
+  });
+
+  it("grantCredits without an idempotencyKey still stacks (returns true each time)", async () => {
+    const user = await createUser(0, 0);
+    expect(await grantCredits(user.id, 2, "a", "ADMIN_ADJUST")).toBe(true);
+    expect(await grantCredits(user.id, 2, "b", "ADMIN_ADJUST")).toBe(true);
+    const after = await prisma.user.findUniqueOrThrow({ where: { id: user.id } });
+    expect(after.creditsBalance).toBe(4);
+    const tx = await prisma.creditTransaction.findMany({ where: { userId: user.id } });
+    expect(tx).toHaveLength(2);
+  });
+
   it("spendCredit draws from subscription balance first, then purchased", async () => {
     const user = await createUser(1, 2);
     // First spend: subscription credit.

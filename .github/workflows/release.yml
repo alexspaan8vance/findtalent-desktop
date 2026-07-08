@@ -40,7 +40,10 @@ jobs:
           cache: npm
 
       - name: Install deps
-        run: npm ci
+        # npm install (not ci) so each platform resolves its own optional/native
+        # deps and tolerates minor lockfile drift — the lockfile is generated on
+        # Windows and can miss transitive versions the mac/linux tree resolves.
+        run: npm install --no-audit --no-fund
 
       - name: Build + publish desktop artifact
         # next build + template DB run first (see desktop:build). electron-builder

@@ -1,5 +1,9 @@
 # findtalent
 
+> **📥 Want the Windows desktop app?** See **[desktop/INSTALL.md](desktop/INSTALL.md)** —
+> download the installer from [Releases](../../releases), run it, add your own
+> 8vance credentials, done. Everything below is for developers.
+
 Anonymous talent matching SaaS on top of the 8vance API. Whitelabel B2B —
 deployed per customer (e.g. `findtalent.ukraine2work.nl`). Behind one
 deploy you can configure **one or more 8vance talent pools** (multi-pool):

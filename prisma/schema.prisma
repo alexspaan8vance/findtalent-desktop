@@ -1,0 +1,712 @@
+// Prisma schema for findtalent
+// Datasource: sqlite for local dev; switch to postgres in prod.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+enum AdminRole {
+  ADMIN
+  CUSTOMER
+}
+
+enum ProjectStatus {
+  DRAFT
+  MATCHING
+  READY
+  ARCHIVED
+  FAILED
+  CLOSED
+}
+
+enum CreditReason {
+  SUBSCRIPTION_GRANT
+  PURCHASE
+  REVEAL
+  REFUND
+  ADMIN_ADJUST
+  INITIAL
+}
+
+enum NotifStatus {
+  PENDING
+  SENT
+  FAILED
+}
+
+enum ShortlistStage {
+  NEW
+  SHORTLISTED
+  CONTACTED
+  REJECTED
+}
+
+enum OrgRole {
+  OWNER
+  MEMBER
+}
+
+model Tenant {
+  id                        String   @id @default(cuid())
+  slug                      String   @unique
+  name                      String
+  eightvanceClientId        String
+  eightvanceClientSecretEnc String
+  eightvanceCompanyId       Int
+  // 8vance API base URL for this pool. Null = the deploy default (PROD
+  // app.8vance.com/public/v1). Set per-tenant for ACC pools (e.g. KNSV).
+  eightvanceBaseUrl         String?
+  // The source slug this company's own talents/jobs carry (e.g.
+  // "instituut_voor_twijfelachtig_advies" for IVTA). Used to label a candidate
+  // talent on create and to distinguish own-pool jobs from the open market.
+  ownSourceSlug             String?
+  // Controls what the /app/candidates LIST shows for this pool (NOT matching —
+  // projects always match against the complete pool):
+  //   "FULL"  — show the complete 8vance talent pool (read-through) merged with
+  //             the locally-registered candidates. Default.
+  //   "LOCAL" — show only candidates registered through findtalent (local rows).
+  talentScope               String   @default("FULL")
+  // Organization that owns this pool's intake. Public self-registration
+  // (/apply/[slug]) assigns new applicants to this org so they surface in that
+  // org's candidate list. Loose scalar (no FK), mirroring Candidate.createdByUserId.
+  // Auto-claimed by the first recruiter who creates a candidate in the pool;
+  // null until then (public applicants then fall back to the most-recent
+  // candidate's org, else stay tenant-only until a recruiter claims the pool).
+  ownerOrganizationId       String?
+  // Admin-set default pool for NEW candidates. When multiple pools exist the
+  // admin marks exactly one as the default; onboarding + link-gen pre-select it
+  // (a candidate is created in ONE pool — sources are no longer picked during
+  // onboarding). With a single pool it's implicitly the default.
+  isDefaultCandidatePool    Boolean  @default(false)
+  stripeAccountId           String?
+  brandConfigJson           Json
+  // Default language for this pool's wizard search dropdowns (NL/EN/DE).
+  // Customers may override per project; upload happens as-typed (no translation).
+  defaultLocale             String   @default("en")
+  createdAt                 DateTime @default(now())
+  updatedAt                 DateTime @updatedAt
+
+  projectPools ProjectPool[]
+  matches      Match[]
+  reveals      Reveal[]
+}
+
+model User {
+  id                 String    @id @default(cuid())
+  email              String    @unique
+  passwordHash       String?
+  name               String?
+  role               AdminRole @default(CUSTOMER)
+  // Whether this account may access the Candidates surface (talent pool +
+  // candidate→jobs match). NEW signups default FALSE — they get Projects only —
+  // so a random account can't browse/contact talent and bypass the reveal-credit
+  // economics. Existing users are grandfathered to true by the migration; ADMIN
+  // always has access regardless of this flag.
+  candidatesEnabled  Boolean   @default(false)
+  emailVerifiedAt    DateTime?
+  // GDPR Art.7: timestamp the user accepted Terms/Privacy + data processing at
+  // signup (affirmative consent, audit proof). Null = legacy/not-yet-consented.
+  consentGivenAt     DateTime?
+  // One Stripe customer per user. Unique so a second checkout can't attach a
+  // duplicate customer and the webhook's customer→user lookup is unambiguous.
+  // Nullable (users without billing) — NULLs stay distinct under the unique idx.
+  stripeCustomerId   String?   @unique
+  currentPlanId      String?
+  // Subscription credits: reset to plan.creditsPerPeriod every period
+  // (use-it-or-lose-it). Granted on invoice.paid.
+  creditsBalance     Int       @default(0)
+  // Purchased pack credits: bought via credit-pack checkout, never reset,
+  // roll over indefinitely. Total spendable = creditsBalance + purchasedCredits.
+  purchasedCredits   Int       @default(0)
+  creditsPeriodEnd   DateTime?
+  // Stripe subscription lifecycle: 'active' (default when no sub) | 'past_due'
+  // | 'canceled'. Drives a soft access gate (block new reveals when past_due).
+  subscriptionStatus String?   @default("active")
+  createdAt          DateTime  @default(now())
+  lastLoginAt        DateTime?
+
+  projects       Project[]
+  reveals        Reveal[]
+  creditTx       CreditTransaction[]
+  savedSearches  SavedSearch[]
+  // Team: the org this user primarily belongs to (their own personal org by
+  // default). Projects are shared across an org's members. Nullable +
+  // additive — single-user accounts work unchanged until a colleague joins.
+  organizationId String?
+
+  notifications    Notification[]
+  notifPrefs       NotificationPreference[]
+  shortlistEntries ShortlistEntry[]
+  outreach         Outreach[]
+  organization     Organization?            @relation("OrgPrimaryMembers", fields: [organizationId], references: [id])
+  memberships      OrganizationMember[]
+  sessions         Session[]
+  accounts         Account[]
+
+  @@index([organizationId])
+}
+
+// A customer organization (team). Members share projects + shortlists.
+model Organization {
+  id        String   @id @default(cuid())
+  name      String
+  createdAt DateTime @default(now())
+
+  // When true, dragging a candidate to a different pipeline stage asks the
+  // recruiter to confirm first (guards against accidental drops — important
+  // once stage-change automations are wired). Owner-toggleable; default on.
+  confirmStageMoves Boolean @default(true)
+
+  members        OrganizationMember[]
+  primaryUsers   User[]               @relation("OrgPrimaryMembers")
+  projects       Project[]
+  pipelineStages PipelineStage[]
+  emailTemplates EmailTemplate[]
+}
+
+model OrganizationMember {
+  id             String   @id @default(cuid())
+  organizationId String
+  userId         String
+  role           OrgRole  @default(MEMBER)
+  createdAt      DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, userId])
+  @@index([userId])
+}
+
+model Project {
+  id                String        @id @default(cuid())
+  userId            String
+  // Owning organization (shared with team members). Nullable for legacy rows;
+  // reads match userId OR organizationId so old projects stay visible.
+  organizationId    String?
+  title             String
+  functionNameId    Int?
+  functionNameLabel String?
+  functionLevel     Int?
+  locationCity      String
+  locationCountry   String
+  locationProvince  String?
+  locationLat       String?
+  locationLng       String?
+  skillsJson        Json
+  languagesJson     Json
+  educationLevel    String?
+  status            ProjectStatus @default(DRAFT)
+  createdAt         DateTime      @default(now())
+  lastMatchedAt     DateTime?
+
+  user          User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization  Organization? @relation(fields: [organizationId], references: [id])
+  pools         ProjectPool[]
+  matches       Match[]
+  reveals       Reveal[]
+  savedSearches SavedSearch[]
+  outreach      Outreach[]
+
+  @@index([userId])
+  @@index([organizationId])
+}
+
+// Per-project link to one or more talent pools (Tenant rows). Each pool gets
+// its own 8vance job + async-match task, so we track ids per pool here.
+model ProjectPool {
+  id               String        @id @default(cuid())
+  projectId        String
+  tenantId         String
+  eightvanceJobId  Int?
+  eightvanceTaskId String?
+  status           ProjectStatus @default(DRAFT)
+  lastMatchedAt    DateTime?
+  // When this pool most recently ENTERED the MATCHING state (unlike
+  // lastMatchedAt, which only updates on success). Lets a stale-sweep recover a
+  // pool whose 8vance async task never completed / whose executor died, so the
+  // project never spins "Matching…" forever. Null on legacy rows (treated as
+  // stale by the sweep).
+  matchStartedAt   DateTime?
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  tenant  Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, tenantId])
+  @@index([tenantId])
+}
+
+model Match {
+  id                    String   @id @default(cuid())
+  projectId             String
+  tenantId              String
+  eightvanceTalentId    Int
+  opaqueId              String
+  score                 Float
+  anonymizedPayloadJson Json
+  skillGapJson          Json?
+  fetchedAt             DateTime @default(now())
+  expiresAt             DateTime
+
+  project          Project          @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  tenant           Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  shortlistEntries ShortlistEntry[]
+
+  @@unique([projectId, tenantId, eightvanceTalentId])
+  @@index([projectId, score])
+  @@index([tenantId])
+}
+
+// Per-user pipeline state on a shortlisted candidate: favorite flag, free-text
+// note, and a stage. Absence of a row = default (not favorite, NEW, no note).
+model ShortlistEntry {
+  id        String         @id @default(cuid())
+  userId    String
+  matchId   String
+  favorite  Boolean        @default(false)
+  note      String?
+  // Legacy fixed stage (kept for back-compat / fallback). The configurable
+  // Kanban uses `stageId` → PipelineStage; entries with a null stageId map
+  // from this enum.
+  stage     ShortlistStage @default(NEW)
+  stageId   String?
+  // Manual ordering within a Kanban column.
+  position  Int            @default(0)
+  // Set when this entry was auto-created from an inbound application (the talent
+  // self-applied/liked our published job in 8vance). Drives the "Gesolliciteerd"
+  // badge. Null = a normal shortlist entry (recruiter-driven). Additive — never
+  // unset by the recruiter moving the card.
+  appliedAt DateTime?
+  updatedAt DateTime       @updatedAt
+
+  user     User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  match    Match          @relation(fields: [matchId], references: [id], onDelete: Cascade)
+  stageRef PipelineStage? @relation(fields: [stageId], references: [id], onDelete: SetNull)
+
+  @@unique([userId, matchId])
+  @@index([userId])
+  @@index([matchId])
+  @@index([stageId])
+}
+
+// Configurable Kanban pipeline stages, per organization (a team's board
+// template applied to every project). Seeded with a sensible default set;
+// fully CRUD-able (add/rename/reorder/recolor/remove).
+model PipelineStage {
+  id             String   @id @default(cuid())
+  organizationId String
+  name           String
+  position       Int      @default(0)
+  color          String   @default("#1f6f5c")
+  isTerminal     Boolean  @default(false)
+  // Reveal-gate anchor (identity, NOT position). A candidate whose name has
+  // not been revealed may never be moved into a stage with revealRequired=true.
+  // Set once at seed/create time (pre-reveal stages = false, post-reveal = true)
+  // and never changed by reorder — so reordering a board cannot un-gate a stage.
+  revealRequired Boolean  @default(true)
+  createdAt      DateTime @default(now())
+
+  organization Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  entries      ShortlistEntry[]
+
+  @@index([organizationId, position])
+}
+
+// Reusable email templates per organization (outreach + notifications),
+// seeded with default copy out of the box; editable. `key` identifies the
+// purpose (e.g. candidate_outreach, invite, new_match, payment_failed).
+model EmailTemplate {
+  id             String   @id @default(cuid())
+  organizationId String
+  key            String
+  name           String
+  subject        String
+  body           String
+  updatedAt      DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, key])
+  @@index([organizationId])
+}
+
+// Outreach log: a recorded contact attempt to a revealed candidate (email via
+// a template). Tracks the "contacted" state + which template/channel was used.
+model Outreach {
+  id                 String   @id @default(cuid())
+  userId             String
+  projectId          String
+  tenantId           String
+  eightvanceTalentId Int
+  channel            String   @default("email")
+  templateKey        String?
+  status             String   @default("SENT")
+  createdAt          DateTime @default(now())
+
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@index([projectId])
+  @@index([tenantId])
+}
+
+model Reveal {
+  id                 String   @id @default(cuid())
+  projectId          String
+  userId             String
+  tenantId           String
+  eightvanceTalentId Int
+  revealedAt         DateTime @default(now())
+  expiresAt          DateTime
+  creditCost         Int      @default(1)
+  // Provenance of this reveal. Null = a paid reveal (the legacy default that
+  // spent a credit + claimed a 14-day exclusivity lock). 'application' = a FREE
+  // reveal created because the talent self-applied to our published job via the
+  // 8vance career portal (consent = identity shown at 0 credit, no lock, no
+  // credit-ledger entry). Distinct from paid reveals so audits can tell them apart.
+  source             String?
+  piiPayloadEnc      String
+
+  project Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user    User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tenant  Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  locks   RevealLock[]
+
+  @@index([tenantId, eightvanceTalentId, expiresAt])
+  @@index([projectId])
+  @@index([userId])
+}
+
+// The single ACTIVE exclusive lock per (tenant, talent). A unique constraint
+// makes lock acquisition race-safe: concurrent reveals of the same candidate
+// in a tenant collide on insert (P2002) so only one wins + spends a credit.
+// When a lock expires a new holder takes it over (the row is reused).
+model RevealLock {
+  id                 String   @id @default(cuid())
+  tenantId           String
+  eightvanceTalentId Int
+  userId             String
+  revealId           String?
+  expiresAt          DateTime
+  updatedAt          DateTime @updatedAt
+
+  // FK to the linked reveal. SetNull on delete so a deleted Reveal can't leave
+  // the lock pointing at a missing row — acquireReveal treats a null revealId
+  // as "no valid reveal" and charges a credit before creating a fresh one.
+  reveal Reveal? @relation(fields: [revealId], references: [id], onDelete: SetNull)
+
+  @@unique([tenantId, eightvanceTalentId])
+  @@index([expiresAt])
+  @@index([revealId])
+}
+
+model Plan {
+  id               String  @id @default(cuid())
+  stripePriceId    String  @unique
+  name             String
+  priceEur         Int
+  creditsPerPeriod Int
+  periodMonths     Int     @default(2)
+  featuresJson     Json
+  active           Boolean @default(true)
+}
+
+model CreditTransaction {
+  id        String       @id @default(cuid())
+  userId    String
+  delta     Int
+  reason    CreditReason
+  refId     String?
+  // Optional at-most-once key for grants that must survive webhook re-runs /
+  // Stripe retries (e.g. "purchase:<stripe_session_id>", "refund:<session_id>").
+  // Unique: a duplicate grant insert hits P2002 and is treated as an
+  // already-applied no-op. Null for rows that don't need it — SQLite keeps NULLs
+  // distinct, so ordinary ledger rows never collide.
+  idempotencyKey String?  @unique
+  createdAt DateTime     @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+}
+
+model SavedSearch {
+  id          String    @id @default(cuid())
+  userId      String
+  projectId   String
+  name        String
+  lastRunAt   DateTime?
+  notifyEmail Boolean   @default(true)
+  createdAt   DateTime  @default(now())
+
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([projectId])
+  @@index([lastRunAt])
+}
+
+model Notification {
+  id           String      @id @default(cuid())
+  userId       String
+  type         String
+  payloadJson  Json
+  sentAt       DateTime?
+  readAt       DateTime?
+  status       NotifStatus @default(PENDING)
+  // Email delivery retry bookkeeping: how many send attempts failed. Lets the
+  // deliver loop retry transient Resend failures + surfaces stuck rows.
+  failureCount Int         @default(0)
+  createdAt    DateTime    @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, status])
+  @@index([userId, readAt])
+}
+
+// Per-user, per-type delivery preferences. Absence of a row means defaults
+// apply (email=true, inApp=true). Unique on (userId, type).
+model NotificationPreference {
+  id        String   @id @default(cuid())
+  userId    String
+  type      String
+  email     Boolean  @default(true)
+  inApp     Boolean  @default(true)
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, type])
+  @@index([userId])
+}
+
+// Stripe webhook idempotency: one row per processed event id. A unique
+// constraint makes concurrent re-deliveries safe (insert fails the 2nd time).
+model WebhookEvent {
+  id          String   @id @default(cuid())
+  eventId     String   @unique
+  type        String
+  // Two-phase claim status. First delivery inserts 'processing' BEFORE running
+  // side effects; the handler flips it to 'completed' only after those side
+  // effects commit. A re-delivery observing 'completed' short-circuits
+  // (idempotent ack); one observing 'processing' RE-RUNS the (idempotent)
+  // handler, so a crash between the claim and the grant can no longer swallow
+  // the grant. Backfilled to 'completed' for pre-existing rows.
+  status      String   @default("processing")
+  processedAt DateTime @default(now())
+
+  @@index([processedAt])
+}
+
+model AdminAuditLog {
+  id          String   @id @default(cuid())
+  adminUserId String
+  action      String
+  targetType  String
+  targetId    String?
+  payloadJson Json?
+  createdAt   DateTime @default(now())
+
+  @@index([adminUserId, createdAt])
+}
+
+model VerificationToken {
+  id         String   @id @default(cuid())
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@index([identifier])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String?
+  access_token      String?
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String?
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@index([userId])
+}
+
+// ---------------------------------------------------------------------------
+// Candidate match module (talent -> jobs). Semi-standalone from the employer
+// (job -> talent) flow above. A recruiter onboards a candidate (CV + extra
+// info) OR a candidate self-onboards via a magic-link portal; we sync them as
+// an 8vance talent and match them against jobs from one or more sources
+// (own pool + JobDigger open market), with a staffing-agency filter on top.
+// ---------------------------------------------------------------------------
+
+enum CandidateStatus {
+  DRAFT // created, no CV/profile yet
+  ONBOARDING // CV uploaded / being filled in
+  READY // synced to 8vance, ready to match
+  MATCHING // a match run is in flight
+  ARCHIVED
+}
+
+enum AgencyRuleKind {
+  NAME // match against the employer/company name
+  DESCRIPTION // match against the vacancy description text
+}
+
+model Candidate {
+  id                 String          @id @default(cuid())
+  // Loose-coupled owner refs (plain scalars + indexes; no back-relation so we
+  // don't have to touch User/Organization). organizationId scopes sharing.
+  organizationId     String?
+  createdByUserId    String
+  tenantId           String? // primary pool tenant for own-pool matching
+  name               String
+  email              String?
+  phone              String?
+  locale             String          @default("nl")
+  // GDPR Art.13/14: timestamp the candidate consented to their PII being
+  // processed + synced to 8vance for job matching. syncCandidateToVance is
+  // gated on this. Null = not-yet-consented (legacy rows treated as consented).
+  consentGivenAt     DateTime?
+  // Parsed CV: stored text + opaque file key (no raw PII in match payloads).
+  cvFileKey          String?
+  cvText             String?
+  // Resolved 8vance talent id after sync (talent.create + sub-resources).
+  eightvanceTalentId Int?
+  // Atomic single-flight guard for syncCandidateToVance: set when a sync claims
+  // this candidate, cleared on failure. Prevents a racing/lagging second sync
+  // (e.g. two match-page after() auto-resyncs) from creating a DUPLICATE 8vance
+  // talent (reported live: one candidate → 2 talents → "4× in the pool").
+  syncStartedAt      DateTime?
+  // Snapshot of the profile we built (skills/languages/education/experience).
+  profileJson        Json?
+  // Candidate preferences captured at onboarding (region, radius, contract
+  // types, remote, languages, desired function) — drive default match filters.
+  preferencesJson    Json?
+  // Pending/approved/dismissed "richer-wins" CV suggestions: the 8vance CV-parse
+  // proposing additions/replacements over our local parse, for human approval.
+  // Shape = CvSuggestion[] (see src/lib/candidate/cv-suggestions.ts). Null until
+  // the first suggestion pass runs.
+  cvSuggestionsJson  Json?
+  // Lifecycle of the 8vance CV-reparse suggestion pass so the UI can tell apart
+  // "still analysing" from "done, nothing to suggest": "pending" (reparse hasn't
+  // surfaced parsed sub-resources yet — keep polling), "ready" (suggestions
+  // exist), "none" (parse landed, profile already complete), "error". Null until
+  // the first pass runs (legacy rows).
+  cvSuggestionsStatus String?
+  status             CandidateStatus @default(DRAFT)
+  // Self-onboard portal: signed token + expiry. Null when recruiter-driven.
+  portalToken        String?         @unique
+  portalTokenExpires DateTime?
+  createdAt          DateTime        @default(now())
+  updatedAt          DateTime        @updatedAt
+
+  matchRuns CandidateMatchRun[]
+
+  @@index([organizationId])
+  @@index([createdByUserId])
+  @@index([eightvanceTalentId])
+  // Pool-browse dedup: candidate.findMany({ tenantId, organizationId,
+  // eightvanceTalentId: { in } }) runs on every /api/candidates/pool page.
+  @@index([tenantId, organizationId, eightvanceTalentId])
+  // Candidates list: status (not ARCHIVED) within an org.
+  @@index([organizationId, status])
+}
+
+model CandidateMatchRun {
+  id          String        @id @default(cuid())
+  candidateId String
+  // Which sources this run targeted (e.g. ["ownpool","jobdigger"]) + the
+  // filter snapshot applied (contract types, education, location, radius...).
+  sourcesJson Json
+  filtersJson Json?
+  taskId      String? // 8vance async task id
+  status      ProjectStatus @default(DRAFT)
+  createdAt   DateTime      @default(now())
+  completedAt DateTime?
+
+  candidate Candidate           @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+  jobs      CandidateJobMatch[]
+
+  @@index([candidateId])
+}
+
+model CandidateJobMatch {
+  id                String  @id @default(cuid())
+  runId             String
+  eightvanceJobId   Int
+  score             Float
+  // Whether `score` is trustworthy to SHOW as a percentage. The `/match/job/`
+  // list hands back a degenerate `score:1` for cross-company jobs the tenant
+  // doesn't own (a pilot then shows 100% on "Fishmonger" etc). Own-pool rows
+  // (employerCompanyId == tenant company) carry a real score → reliable=true.
+  // Cross-company rows start false (UI hides the % → shown only on detail-open,
+  // where `/match/specific/` computes the real graded score); once that real
+  // score is fetched on open it's cached back here with reliable=true.
+  scoreReliable     Boolean @default(true)
+  title             String
+  employerName      String?
+  // 8vance company id of the posting employer — lets the UI split own-pool
+  // jobs (== tenant company) from open-market jobs (JobDigger et al.).
+  employerCompanyId Int?
+  source            String?
+  contractType      String?
+  locationCity      String?
+  locationLabel     String?
+  // Staffing-agency classification: whether this vacancy looks like it comes
+  // from an uitzendbureau/intermediary, and which signals fired (name match,
+  // is_intermediary flag, contract type, description phrase). hiddenByFilter
+  // reflects whether the candidate's active filter hid it.
+  isStaffingAgency  Boolean @default(false)
+  agencyScore       Float   @default(0)
+  agencyReasonsJson Json?
+  hiddenByFilter    Boolean @default(false)
+  payloadJson       Json?
+
+  run CandidateMatchRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@index([runId])
+  @@index([runId, isStaffingAgency])
+}
+
+// Admin-editable detection rules: a list of employer-name fragments and
+// vacancy-description phrases that flag a vacancy as coming from a staffing
+// agency / intermediary. Seeded with sensible NL/EN defaults; per-org rows
+// override/extend the built-in defaults. organizationId null = global default.
+model StaffingAgencyRule {
+  id             String         @id @default(cuid())
+  organizationId String?
+  kind           AgencyRuleKind
+  pattern        String // lowercased substring to match (e.g. "randstad", "voor onze opdrachtgever")
+  label          String? // human note (e.g. "Randstad", "detachering tell")
+  enabled        Boolean        @default(true)
+  createdAt      DateTime       @default(now())
+
+  @@index([organizationId, kind, enabled])
+}

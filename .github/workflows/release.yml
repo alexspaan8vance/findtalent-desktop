@@ -1,0 +1,39 @@
+name: release-desktop
+
+# Builds the Windows installer and publishes it to a GitHub Release so the
+# desktop app's auto-updater (electron-updater) can deliver it to Bob.
+#
+# Trigger: push a tag like `v0.1.0`  →  git tag v0.1.0 && git push origin v0.1.0
+# The release .exe + latest.yml land on the Releases page automatically.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install deps
+        run: npm ci
+
+      - name: Build desktop installer + publish
+        # electron-builder reads publish:{provider:github} from the config and
+        # uploads to the Release matching this tag. next build + template DB run
+        # first (see desktop:build); --publish always forces the upload.
+        run: npm run desktop:build -- --publish always
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false' # unsigned build (SmartScreen note in INSTALL.md)

@@ -1,0 +1,16 @@
+node_modules
+.next
+.git
+.env
+.env.local
+.env.*.local
+*.log
+coverage
+.vscode
+.idea
+tests/.dbs
+prisma/dev.db
+prisma/dev.db-journal
+screenshots
+.cursor
+*.tsbuildinfo

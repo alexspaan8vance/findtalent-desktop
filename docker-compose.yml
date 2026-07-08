@@ -1,0 +1,57 @@
+services:
+  findtalent:
+    build: .
+    image: findtalent:latest
+    container_name: findtalent
+    restart: unless-stopped
+    ports:
+      # Loopback-only: the app is fronted by the Tailscale Funnel proxy on the
+      # same host (→ 127.0.0.1). Never bind 0.0.0.0 — that would expose the
+      # container on every interface and bypass the Funnel front door.
+      - "127.0.0.1:${PORT:-3000}:3000"
+    environment:
+      # --- Required ---
+      AUTH_SECRET: ${AUTH_SECRET:?set AUTH_SECRET in .env}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:?set ENCRYPTION_KEY in .env}
+      NEXTAUTH_URL: ${NEXTAUTH_URL:?set NEXTAUTH_URL in .env}
+      TENANT_SLUG: ${TENANT_SLUG:?set TENANT_SLUG in .env}
+      EIGHTVANCE_CLIENT_ID: ${EIGHTVANCE_CLIENT_ID:?set EIGHTVANCE_CLIENT_ID in .env}
+      EIGHTVANCE_CLIENT_SECRET: ${EIGHTVANCE_CLIENT_SECRET:?set EIGHTVANCE_CLIENT_SECRET in .env}
+      EIGHTVANCE_COMPANY_ID: ${EIGHTVANCE_COMPANY_ID:?set EIGHTVANCE_COMPANY_ID in .env}
+      # --- Billing (optional for dev, required for production) ---
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-sk_test_placeholder}
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-whsec_placeholder}
+      # --- Email (optional; without it signup verify mail won't send) ---
+      # --- OpenAI (CV parser / OCR) ---
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ORS_API_KEY: ${ORS_API_KEY:-}
+      GOOGLE_MAPS_API_KEY: ${GOOGLE_MAPS_API_KEY:-}
+      OTP_DEPART_AT: ${OTP_DEPART_AT:-}
+      OTP_GRAPHQL_URL: ${OTP_GRAPHQL_URL:-}
+      EIGHTVANCE_CV_PARSER_TOKEN: ${EIGHTVANCE_CV_PARSER_TOKEN:-}
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
+      MAIL_FROM: ${MAIL_FROM:-noreply@findtalent.local}
+      # --- Signup gating (unset in production = self-signup DISABLED) ---
+      SIGNUP_ALLOWED_DOMAINS: ${SIGNUP_ALLOWED_DOMAINS:-}
+      # --- Cron auth (unset = /api/cron/* refuse with 503) ---
+      CRON_SECRET: ${CRON_SECRET:-}
+      # --- Feature flags ---
+      CV_SUGGESTIONS: ${CV_SUGGESTIONS:-}
+      # --- Branding ---
+      BRAND_NAME: ${BRAND_NAME:-FindTalent}
+      BRAND_PRIMARY_COLOR: ${BRAND_PRIMARY_COLOR:-#0f172a}
+      BRAND_SUPPORT_EMAIL: ${BRAND_SUPPORT_EMAIL:-}
+      BRAND_LOGO_URL: ${BRAND_LOGO_URL:-}
+      # --- DB (SQLite in volume by default; swap to Postgres URL for prod scale) ---
+      DATABASE_URL: ${DATABASE_URL:-file:/data/findtalent.db}
+    volumes:
+      - findtalent-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"require('http').get('http://localhost:3000/api/health', r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))\""]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+volumes:
+  findtalent-data:

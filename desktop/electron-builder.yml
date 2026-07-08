@@ -1,0 +1,57 @@
+# electron-builder config for findtalent-desktop (Windows .exe).
+# Build with:  npm run desktop:build
+appId: com.eightvance.findtalent
+productName: FindTalent
+copyright: © 8vance
+
+directories:
+  output: dist-desktop
+  buildResources: desktop/build
+
+# The electron shell needs NO native modules (the Next app runs as a child
+# process from the standalone bundle, which carries its own traced binaries), so
+# skip @electron/rebuild — it otherwise tries to node-gyp native deps like
+# @parcel/watcher and fails without Visual Studio.
+npmRebuild: false
+buildDependenciesFromSource: false
+
+# What ships inside the app. The Next standalone bundle + static assets +
+# prisma schema/migrations + the bootstrap script + the electron shell.
+files:
+  - desktop/**/*
+  - package.json
+  - node_modules/**/*
+  # The Next app source is NOT in the asar — it ships prebuilt via
+  # extraResources (below). Keep the asar to the electron shell + its deps.
+  - "!.next/**/*"
+  - "!src/**/*"
+  - "!e2e/**/*"
+  - "!tests/**/*"
+  - "!messages/**/*"
+  - "!public/**/*"
+  - "!prisma/**/*"
+  - "!scripts/**/*"
+
+# The app payload (Next standalone + its traced node_modules, prisma CLI/engine,
+# template DB, bootstrap) is copied into resources/app by the afterPack hook —
+# NOT extraResources, because electron-builder strips nested node_modules from
+# extraResources copies, which would drop the prisma runtime and break the app.
+afterPack: desktop/after-pack.js
+
+win:
+  target:
+    - nsis
+  # icon: desktop/build/icon.ico   # add a branded icon before release
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+
+# Auto-update from GitHub Releases (electron-updater reads this at runtime).
+publish:
+  provider: github
+  owner: alexspaan8vance
+  repo: findtalent-desktop

@@ -43,7 +43,12 @@ const PRISMA_SCHEMA = path.join(APP_ROOT, 'prisma', 'schema.prisma');
 const TEMPLATE_DB = path.join(APP_ROOT, 'desktop', 'template.db');
 // Bundled prisma CLI + schema-engine (for applying NEW migrations on update).
 const PRISMA_CLI = path.join(APP_ROOT, 'node_modules', 'prisma', 'build', 'index.js');
-const SCHEMA_ENGINE = path.join(APP_ROOT, 'node_modules', '@prisma', 'engines', 'schema-engine-windows.exe');
+const SCHEMA_ENGINE_NAME = process.platform === 'win32'
+  ? 'schema-engine-windows.exe'
+  : process.platform === 'darwin'
+    ? (process.arch === 'arm64' ? 'schema-engine-darwin-arm64' : 'schema-engine-darwin')
+    : 'schema-engine-debian-openssl-3.0.x';
+const SCHEMA_ENGINE = path.join(APP_ROOT, 'node_modules', '@prisma', 'engines', SCHEMA_ENGINE_NAME);
 
 /** Load or create the local secrets/config file (never committed anywhere). */
 function loadConfig() {
@@ -237,7 +242,8 @@ function initAutoUpdate() {
       });
       if (response === 0) autoUpdater.quitAndInstall();
     });
-    autoUpdater.checkForUpdatesAndNotify();
+    // Unsigned mac apps can't Squirrel-auto-update — swallow the rejection.
+    autoUpdater.checkForUpdatesAndNotify().catch(() => {});
   } catch {
     /* updater not available — skip */
   }

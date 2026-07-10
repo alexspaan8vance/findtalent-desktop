@@ -71,3 +71,4 @@ publish:
   provider: github
   owner: alexspaan8vance
   repo: findtalent-desktop
+  releaseType: release # publish a real release (not a draft) so Bob can download it

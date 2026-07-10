@@ -39,6 +39,13 @@ jobs:
           node-version: 20
           cache: npm
 
+      - name: Sync version to tag
+        # electron-builder derives the GitHub release tag from package.json
+        # `version`, NOT the git tag. Set them equal so a `v0.1.4` tag publishes
+        # to the `v0.1.4` release. Shell differs per-OS; both set no git commit.
+        shell: bash
+        run: npm version "${GITHUB_REF_NAME#v}" --no-git-tag-version --allow-same-version
+
       - name: Install deps
         # npm install (not ci) so each platform resolves its own optional/native
         # deps and tolerates minor lockfile drift — the lockfile is generated on

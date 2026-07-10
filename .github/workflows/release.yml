@@ -53,3 +53,12 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CSC_IDENTITY_AUTO_DISCOVERY: 'false' # unsigned (Gatekeeper/SmartScreen note in INSTALL.md)
+          # Build-time only. Optional features (Stripe/mail) are off in the shipped
+          # app; these dummies just satisfy module init during `next build`. The
+          # real per-user secrets are generated on Bob's machine at first run.
+          DATABASE_URL: file:./prisma/build.db
+          ENCRYPTION_KEY: rGVjb25zdHJ1Y3RlZC1idWlsZC1vbmx5LWR1bW15LWtleQ==
+          AUTH_SECRET: build-only-dummy-auth-secret-not-used-at-runtime
+          NEXTAUTH_URL: http://127.0.0.1:3000
+          STRIPE_SECRET_KEY: sk_test_placeholder
+          STRIPE_WEBHOOK_SECRET: whsec_placeholder

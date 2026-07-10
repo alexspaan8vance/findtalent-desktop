@@ -7,6 +7,7 @@ import { availableCredits, LOW_CREDITS_THRESHOLD } from '@/lib/credits';
 import { getBrandConfig } from '@/lib/brand/config';
 import { getTranslations } from 'next-intl/server';
 import { LocaleSwitcher } from '@/components/locale-switcher';
+import { FeedbackWidget } from '@/components/feedback/feedback-widget';
 
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
   const user = await requireUser();
@@ -151,6 +152,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
         </div>
       )}
       <main className="mx-auto max-w-6xl px-6 py-8">{children}</main>
+      <FeedbackWidget appVersion={process.env.APP_VERSION ?? undefined} />
     </div>
   );
 }

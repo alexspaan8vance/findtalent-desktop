@@ -710,3 +710,30 @@ model StaffingAgencyRule {
 
   @@index([organizationId, kind, enabled])
 }
+
+// In-app user feedback / bug reports. A user hits the floating Feedback button,
+// optionally "picks" an element on the page (its link/text/selector is captured),
+// writes what's wrong, and submits. The row is always stored locally; if a
+// FEEDBACK_WEBHOOK_URL is configured the full payload is also forwarded to us
+// (n8n → Jira), and delivered/deliveryError record that outcome.
+model Feedback {
+  id            String   @id @default(cuid())
+  userId        String?
+  userEmail     String?
+  category      String   @default("bug") // bug | idea | other
+  message       String
+  pageUrl       String? // route the user was on
+  appVersion    String?
+  userAgent     String?
+  // Optional "picked" element context (the link/button the user selected).
+  targetText    String? // visible text of the picked element
+  targetHref    String? // href if the picked element is/links to a URL
+  targetSelector String? // best-effort CSS selector
+  screenshot    String? // optional data-URL screenshot (may be large; nullable)
+  delivered     Boolean  @default(false)
+  deliveryError String?
+  createdAt     DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([userId])
+}

@@ -64,6 +64,10 @@ function loadConfig() {
     AUTH_SECRET: crypto.randomBytes(32).toString('base64'),
     CRON_SECRET: crypto.randomBytes(16).toString('hex'),
     BRAND_NAME: 'FindTalent',
+    // Where in-app feedback is forwarded (n8n webhook → Jira). Empty = feedback
+    // is only stored locally + shown in Admin → Feedback. Set this to make Bob's
+    // feedback reach us. Editable any time in config.json.
+    FEEDBACK_WEBHOOK_URL: '',
   };
   fs.mkdirSync(USER_DIR, { recursive: true });
   fs.writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 2), { mode: 0o600 });
@@ -114,6 +118,8 @@ function serverEnv(cfg, port) {
     AUTH_SECRET: cfg.AUTH_SECRET,
     CRON_SECRET: cfg.CRON_SECRET,
     BRAND_NAME: cfg.BRAND_NAME,
+    APP_VERSION: app.getVersion(),
+    FEEDBACK_WEBHOOK_URL: cfg.FEEDBACK_WEBHOOK_URL || '',
     // 8vance creds are NOT set here — Bob adds his pool (creds) via Admin,
     // stored encrypted in the local DB. Billing/mail/cron env stay absent
     // (optional features off by default).
